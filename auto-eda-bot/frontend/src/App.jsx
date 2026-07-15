@@ -4,13 +4,35 @@ import './App.css'
 const BACKEND_URL = 'http://localhost:8000'
 
 function App() {
-  const [messages, setMessages] = useState([])
+  const [messages, setMessages] = useState(() => {
+    const saved = localStorage.getItem('eda_messages')
+    return saved ? JSON.parse(saved) : []
+  })
   const [input, setInput] = useState('')
   const [isLoading, setIsLoading] = useState(false)
-  const [uploadedFile, setUploadedFile] = useState(null)
-  const [dataPreview, setDataPreview] = useState(null)
+  const [uploadedFile, setUploadedFile] = useState(() => {
+    const saved = localStorage.getItem('eda_uploadedFile')
+    return saved ? JSON.parse(saved) : null
+  })
+  const [dataPreview, setDataPreview] = useState(() => {
+    const saved = localStorage.getItem('eda_dataPreview')
+    return saved ? JSON.parse(saved) : null
+  })
   const [backendOnline, setBackendOnline] = useState(false)
   const [dragover, setDragover] = useState(false)
+
+  // LocalStorage senkronizasyonu
+  useEffect(() => {
+    localStorage.setItem('eda_messages', JSON.stringify(messages))
+  }, [messages])
+
+  useEffect(() => {
+    localStorage.setItem('eda_uploadedFile', JSON.stringify(uploadedFile))
+  }, [uploadedFile])
+
+  useEffect(() => {
+    localStorage.setItem('eda_dataPreview', JSON.stringify(dataPreview))
+  }, [dataPreview])
 
   const chatEndRef = useRef(null)
   const fileInputRef = useRef(null)
@@ -127,6 +149,16 @@ function App() {
     setInput(text)
   }
 
+  // PDF İndirme
+  const handleDownloadPDF = () => {
+    if (messages.length === 0) {
+      alert("Henüz bir analiz yapılmadı!");
+      return;
+    }
+    const text = encodeURIComponent("Otonom Veri Bilimcisi tarafından oluşturulan EDA Raporu.");
+    window.open(`${BACKEND_URL}/api/report?text=${text}`, '_blank');
+  }
+
   // Drag & Drop
   const handleDragOver = (e) => { e.preventDefault(); setDragover(true) }
   const handleDragLeave = () => setDragover(false)
@@ -210,6 +242,17 @@ function App() {
         <div className="divider" />
 
         {/* Sohbeti Temizle */}
+        {messages.length > 0 && (
+          <button
+            className="sidebar-btn"
+            style={{ marginBottom: '10px', borderColor: 'var(--accent-secondary)', color: 'var(--accent-secondary)' }}
+            onClick={handleDownloadPDF}
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            PDF Raporu İndir
+          </button>
+        )}
+
         <button
           className="sidebar-btn"
           onClick={() => { setMessages([]); setUploadedFile(null); setDataPreview(null) }}
