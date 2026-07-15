@@ -1,0 +1,56 @@
+# Python ve Çevre Dosyaları
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment (Sanal Ortam)
+venv/
+.venv/
+env/
+.env_folder/
+
+# Çevre Değişkenleri ve Gizli Dosyalar
+.env
+.env.local
+.env.development
+.env.production
+.secrets/
+
+# Kullanıcı Verileri ve Model Çıktıları
+# data klasörü içindeki her şeyi yoksay ama klasörün yapısını koru
+data/*
+!data/.gitkeep
+
+# Üretilen grafikler ve raporları yoksay ama klasör yapısını koru
+output/charts/*
+!output/charts/.gitkeep
+
+# Test önbellekleri
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editör / IDE Dosyaları
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
