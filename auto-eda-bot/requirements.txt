@@ -5,6 +5,8 @@
 langchain>=0.2.0
 langchain-core>=0.2.0
 langchain-community>=0.2.0
+langchain-openai>=0.1.0
+langgraph>=0.2.0
 
 # Veri İşleme
 pandas>=2.0.0
@@ -15,22 +17,21 @@ openpyxl>=3.1.0          # Excel dosyaları için
 matplotlib>=3.7.0
 seaborn>=0.13.0
 
-# Kullanıcı Arayüzü (Frontend)
-streamlit>=1.30.0
-
 # API Sunucusu (Backend)
 fastapi>=0.100.0
 uvicorn>=0.23.0
 python-multipart>=0.0.6
 
-# LLM — Foundry Local SDK (ayrıca kurulacak)
-# foundry-local-sdk  # Microsoft Foundry Local için
-
-# İleri Düzey Veri Bilimi (İsteğe Bağlı Eklemeler)
+# İleri Düzey Veri Bilimi
 scikit-learn>=1.3.0      # Makine Öğrenimi, Regresyon, Kümeleme
 statsmodels>=0.14.0      # İstatistiksel analiz
 pydantic>=2.5.0          # Çıktı ayrıştırma ve veri doğrulama
 
-# Etkileşimli Görselleştirme (İsteğe Bağlı Eklemeler)
+# Etkileşimli Görselleştirme
 plotly>=5.18.0
-altair>=5.2.0
+
+# PDF Rapor
+fpdf2>=2.7.0
+
+# LLM — Foundry Local SDK (ayrıca kurulacak)
+# foundry-local-sdk  # Microsoft Foundry Local için

@@ -1,9 +1,17 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism'
+import { ToastContainer, showToast } from './components/Toast'
 import './App.css'
 
 const BACKEND_URL = 'http://localhost:8000'
 
 function App() {
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
   const [messages, setMessages] = useState(() => {
     const saved = localStorage.getItem('eda_messages')
     return saved ? JSON.parse(saved) : []
@@ -14,30 +22,83 @@ function App() {
     const saved = localStorage.getItem('eda_uploadedFile')
     return saved ? JSON.parse(saved) : null
   })
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    const saved = localStorage.getItem('eda_theme')
+    return saved ? JSON.parse(saved) : true
+  })
   const [dataPreview, setDataPreview] = useState(() => {
     const saved = localStorage.getItem('eda_dataPreview')
     return saved ? JSON.parse(saved) : null
   })
   const [backendOnline, setBackendOnline] = useState(false)
   const [dragover, setDragover] = useState(false)
+  const [urlInput, setUrlInput] = useState('')
+  const [isScraping, setIsScraping] = useState(false)
+  const [sessionId, setSessionId] = useState(() => {
+    const saved = localStorage.getItem('eda_sessionId')
+    return saved || crypto.randomUUID()
+  })
+  const [streamingText, setStreamingText] = useState('')
+  const [streamingSteps, setStreamingSteps] = useState([])
+  const [fileList, setFileList] = useState([])
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [fullscreenChart, setFullscreenChart] = useState(null)
 
+  // ---------------------------------------------------------------------------
   // LocalStorage senkronizasyonu
-  useEffect(() => {
-    localStorage.setItem('eda_messages', JSON.stringify(messages))
-  }, [messages])
+  // ---------------------------------------------------------------------------
+  useEffect(() => { localStorage.setItem('eda_messages', JSON.stringify(messages)) }, [messages])
+  useEffect(() => { localStorage.setItem('eda_uploadedFile', JSON.stringify(uploadedFile)) }, [uploadedFile])
+  useEffect(() => { localStorage.setItem('eda_dataPreview', JSON.stringify(dataPreview)) }, [dataPreview])
+  useEffect(() => { localStorage.setItem('eda_sessionId', sessionId) }, [sessionId])
 
   useEffect(() => {
-    localStorage.setItem('eda_uploadedFile', JSON.stringify(uploadedFile))
-  }, [uploadedFile])
+    localStorage.setItem('eda_theme', JSON.stringify(isDarkMode))
+    if (!isDarkMode) {
+      document.documentElement.classList.add('light-mode')
+    } else {
+      document.documentElement.classList.remove('light-mode')
+    }
+  }, [isDarkMode])
+
+  // ---------------------------------------------------------------------------
+  // Sesli Girdi (Speech Recognition)
+  // ---------------------------------------------------------------------------
+  const [isListening, setIsListening] = useState(false)
+  const recognitionRef = useRef(null)
 
   useEffect(() => {
-    localStorage.setItem('eda_dataPreview', JSON.stringify(dataPreview))
-  }, [dataPreview])
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition()
+      recognition.lang = 'tr-TR'
+      recognition.continuous = false
+      recognition.interimResults = false
+      recognition.onstart = () => setIsListening(true)
+      recognition.onresult = (event) => {
+        const transcript = event.results[0][0].transcript
+        setInput(prev => prev + (prev ? ' ' : '') + transcript)
+      }
+      recognition.onerror = () => setIsListening(false)
+      recognition.onend = () => setIsListening(false)
+      recognitionRef.current = recognition
+    }
+  }, [])
+
+  const toggleListening = () => {
+    if (isListening) {
+      recognitionRef.current?.stop()
+    } else {
+      recognitionRef.current?.start()
+    }
+  }
 
   const chatEndRef = useRef(null)
   const fileInputRef = useRef(null)
 
+  // ---------------------------------------------------------------------------
   // Backend sağlık kontrolü
+  // ---------------------------------------------------------------------------
   useEffect(() => {
     const checkHealth = async () => {
       try {
@@ -52,18 +113,39 @@ function App() {
     return () => clearInterval(interval)
   }, [])
 
+  // ---------------------------------------------------------------------------
+  // Dosya listesini getir
+  // ---------------------------------------------------------------------------
+  const fetchFileList = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/files`)
+      const data = await res.json()
+      setFileList(data.files || [])
+    } catch {
+      // Backend offline olabilir
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchFileList()
+    const interval = setInterval(fetchFileList, 15000)
+    return () => clearInterval(interval)
+  }, [fetchFileList])
+
   // Sohbet alanını otomatik kaydır
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages, isLoading])
+  }, [messages, isLoading, streamingText])
 
+  // ---------------------------------------------------------------------------
   // Dosya yükleme
+  // ---------------------------------------------------------------------------
   const handleFileUpload = async (file) => {
     if (!file) return
 
     const ext = file.name.split('.').pop().toLowerCase()
     if (!['csv', 'xls', 'xlsx'].includes(ext)) {
-      alert('Sadece CSV ve Excel dosyaları desteklenir!')
+      showToast('Sadece CSV ve Excel dosyaları desteklenir!', 'error')
       return
     }
 
@@ -86,19 +168,24 @@ function App() {
         })
         setMessages(prev => [...prev, {
           role: 'bot',
-          content: `✅ "${data.file_name}" başarıyla yüklendi! (${data.row_count} satır, ${data.columns.length} sütun)\n\nŞimdi bana bu veri hakkında sorular sorabilirsin. Örneğin:\n• "Bu veriyi analiz et"\n• "Eksik verileri göster"\n• "Sütunlar arasındaki korelasyonu çiz"`,
+          content: `✅ **"${data.file_name}"** başarıyla yüklendi!\n\n- 📊 **${data.row_count}** satır, **${data.columns.length}** sütun\n\nŞimdi bana bu veri hakkında sorular sorabilirsin:\n- *"Bu veriyi analiz et"*\n- *"Eksik verileri göster"*\n- *"Sütunlar arasındaki korelasyonu çiz"*`,
           charts: [],
+          html_charts: [],
           steps: []
         }])
+        showToast(`${data.file_name} yüklendi!`, 'success')
+        fetchFileList()
       } else {
-        alert(data.detail || 'Yükleme başarısız!')
+        showToast(data.detail || 'Yükleme başarısız!', 'error')
       }
     } catch (err) {
-      alert('Backend\'e bağlanılamadı! Sunucunun çalıştığından emin olun.')
+      showToast('Backend\'e bağlanılamadı! Sunucunun çalıştığından emin olun.', 'error')
     }
   }
 
-  // Mesaj gönder
+  // ---------------------------------------------------------------------------
+  // Mesaj gönder (SSE Streaming destekli)
+  // ---------------------------------------------------------------------------
   const handleSend = async () => {
     if (!input.trim() || isLoading) return
 
@@ -106,33 +193,127 @@ function App() {
     setInput('')
     setMessages(prev => [...prev, { role: 'user', content: userMsg }])
     setIsLoading(true)
+    setStreamingText('')
+    setStreamingSteps([])
 
     try {
-      const res = await fetch(`${BACKEND_URL}/api/chat`, {
+      const res = await fetch(`${BACKEND_URL}/api/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           message: userMsg,
-          file_name: uploadedFile
+          file_name: uploadedFile,
+          session_id: sessionId
         })
       })
-      const data = await res.json()
 
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let fullReply = ''
+      let finalCharts = []
+      let finalHtmlCharts = []
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          const jsonStr = line.slice(6).trim()
+          if (!jsonStr) continue
+
+          try {
+            const event = JSON.parse(jsonStr)
+
+            if (event.type === 'start') {
+              setSessionId(event.session_id)
+            } else if (event.type === 'token') {
+              fullReply += event.content
+              setStreamingText(fullReply)
+            } else if (event.type === 'step') {
+              const stepLabels = {
+                tool_start: event.tool === 'python_repl' 
+                  ? '💻 Python kodu çalıştırılıyor...' 
+                  : event.tool === 'load_data' 
+                    ? '📂 Veri dosyası okunuyor...' 
+                    : `🔧 Araç: ${event.tool}`,
+                tool_end: '✅ Sonuç alındı'
+              }
+              setStreamingSteps(prev => [...prev, {
+                type: event.step_type === 'tool_start' ? 'code' : 'result',
+                status: stepLabels[event.step_type] || event.step_type,
+                detail: event.detail
+              }])
+            } else if (event.type === 'done') {
+              fullReply = event.reply || fullReply
+              finalCharts = event.charts || []
+              finalHtmlCharts = event.html_charts || []
+            } else if (event.type === 'error') {
+              showToast(`Ajan hatası: ${event.message}`, 'error')
+            }
+          } catch {
+            // JSON parse hatası — atla
+          }
+        }
+      }
+
+      // Streaming bitti — mesajı kalıcı hale getir
       setMessages(prev => [...prev, {
         role: 'bot',
-        content: data.reply || 'Bir hata oluştu.',
-        charts: data.charts || [],
-        steps: data.steps || []
+        content: fullReply || 'Bir hata oluştu.',
+        charts: finalCharts,
+        html_charts: finalHtmlCharts,
+        steps: streamingSteps
       }])
+      setStreamingText('')
+      setStreamingSteps([])
+      fetchFileList()
+
     } catch (err) {
-      setMessages(prev => [...prev, {
-        role: 'bot',
-        content: '❌ Backend\'e bağlanılamadı. Lütfen sunucunun çalıştığından emin olun.',
-        charts: [],
-        steps: []
-      }])
+      // SSE desteklenmiyorsa veya hata olursa klasik endpoint'e fallback
+      try {
+        const res = await fetch(`${BACKEND_URL}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            message: userMsg,
+            file_name: uploadedFile,
+            session_id: sessionId
+          })
+        })
+        const data = await res.json()
+        if (data.session_id) setSessionId(data.session_id)
+
+        setMessages(prev => [...prev, {
+          role: 'bot',
+          content: data.reply || 'Bir hata oluştu.',
+          charts: data.charts || [],
+          html_charts: data.html_charts || [],
+          steps: data.steps || []
+        }])
+        fetchFileList()
+      } catch {
+        setMessages(prev => [...prev, {
+          role: 'bot',
+          content: '❌ Backend\'e bağlanılamadı. Lütfen sunucunun çalıştığından emin olun.',
+          charts: [],
+          html_charts: [],
+          steps: []
+        }])
+      }
     } finally {
       setIsLoading(false)
+      setStreamingText('')
+      setStreamingSteps([])
     }
   }
 
@@ -149,17 +330,141 @@ function App() {
     setInput(text)
   }
 
+  // ---------------------------------------------------------------------------
   // PDF İndirme
+  // ---------------------------------------------------------------------------
   const handleDownloadPDF = () => {
     if (messages.length === 0) {
-      alert("Henüz bir analiz yapılmadı!");
-      return;
+      showToast("Henüz bir analiz yapılmadı!", 'warning')
+      return
     }
-    const text = encodeURIComponent("Otonom Veri Bilimcisi tarafından oluşturulan EDA Raporu.");
-    window.open(`${BACKEND_URL}/api/report?text=${text}`, '_blank');
+    const text = encodeURIComponent("Otonom Veri Bilimcisi tarafından oluşturulan EDA Raporu.")
+    window.open(`${BACKEND_URL}/api/report?text=${text}`, '_blank')
+    showToast('PDF rapor indiriliyor...', 'info')
   }
 
+  // ---------------------------------------------------------------------------
+  // URL'den Veri Çekme (Web Scraping)
+  // ---------------------------------------------------------------------------
+  const handleScrapeUrl = async () => {
+    if (!urlInput.trim()) return
+    setIsScraping(true)
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/scrape`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: urlInput.trim() })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setUploadedFile(data.file_name)
+        setDataPreview({
+          html: data.preview_html,
+          rows: data.row_count,
+          cols: data.columns.length
+        })
+        setMessages(prev => [...prev, {
+          role: 'bot',
+          content: `🌐 **"${urlInput}"** adresinden **${data.row_count}** satırlık tablo çekildi!\n\nDosya: \`${data.file_name}\`\n\nŞimdi bu veri hakkında sorular sorabilirsiniz.`,
+          charts: [],
+          html_charts: [],
+          steps: []
+        }])
+        setUrlInput('')
+        showToast(`${data.row_count} satırlık tablo çekildi!`, 'success')
+        fetchFileList()
+      } else {
+        showToast(data.detail || 'URL\'den veri çekilemedi!', 'error')
+      }
+    } catch (err) {
+      showToast('Web scraping hatası: ' + err.message, 'error')
+    } finally {
+      setIsScraping(false)
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Örnek Veri Seti Yükleme
+  // ---------------------------------------------------------------------------
+  const handleLoadSampleData = async (dataset) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/sample-data`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ dataset })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setUploadedFile(data.file_name)
+        setDataPreview({
+          html: data.preview_html,
+          rows: data.row_count,
+          cols: data.columns.length
+        })
+        setMessages(prev => [...prev, {
+          role: 'bot',
+          content: `🧪 **Örnek veri seti** yüklendi!\n\n- 📄 Dosya: \`${data.file_name}\`\n- 📊 **${data.row_count}** satır\n\n${data.message}`,
+          charts: [],
+          html_charts: [],
+          steps: []
+        }])
+        showToast(data.message, 'success')
+        fetchFileList()
+      } else {
+        showToast(data.detail || 'Veri seti yüklenemedi!', 'error')
+      }
+    } catch (err) {
+      showToast('Hata: ' + err.message, 'error')
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Dosya Silme
+  // ---------------------------------------------------------------------------
+  const handleDeleteFile = async (filename) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/files/${filename}`, { method: 'DELETE' })
+      const data = await res.json()
+      if (data.success) {
+        showToast(`"${filename}" silindi.`, 'info')
+        if (uploadedFile === filename) {
+          setUploadedFile(null)
+          setDataPreview(null)
+        }
+        fetchFileList()
+      }
+    } catch {
+      showToast('Dosya silinemedi.', 'error')
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Mesaj Kopyalama
+  // ---------------------------------------------------------------------------
+  const handleCopyMessage = (text) => {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('Mesaj panoya kopyalandı!', 'success', 2000)
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+  // Sohbeti Temizle
+  // ---------------------------------------------------------------------------
+  const handleClearChat = async () => {
+    setMessages([])
+    setUploadedFile(null)
+    setDataPreview(null)
+    const newSessionId = crypto.randomUUID()
+    setSessionId(newSessionId)
+    try {
+      await fetch(`${BACKEND_URL}/api/reset`, { method: 'POST' })
+    } catch { /* */ }
+    showToast('Sohbet temizlendi.', 'info')
+  }
+
+  // ---------------------------------------------------------------------------
   // Drag & Drop
+  // ---------------------------------------------------------------------------
   const handleDragOver = (e) => { e.preventDefault(); setDragover(true) }
   const handleDragLeave = () => setDragover(false)
   const handleDrop = (e) => {
@@ -169,14 +474,83 @@ function App() {
     if (file) handleFileUpload(file)
   }
 
+  // ---------------------------------------------------------------------------
+  // Markdown Render Bileşenleri
+  // ---------------------------------------------------------------------------
+  const markdownComponents = {
+    code({ node, inline, className, children, ...props }) {
+      const match = /language-(\w+)/.exec(className || '')
+      return !inline && match ? (
+        <SyntaxHighlighter
+          style={oneDark}
+          language={match[1]}
+          PreTag="div"
+          customStyle={{
+            borderRadius: '8px',
+            fontSize: '0.82rem',
+            margin: '8px 0'
+          }}
+          {...props}
+        >
+          {String(children).replace(/\n$/, '')}
+        </SyntaxHighlighter>
+      ) : (
+        <code className="inline-code" {...props}>{children}</code>
+      )
+    },
+    table({ children }) {
+      return (
+        <div className="md-table-wrapper">
+          <table className="md-table">{children}</table>
+        </div>
+      )
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // RENDER
+  // ---------------------------------------------------------------------------
   return (
     <>
       <div className="bg-blobs">
         <div className="blob blob-1" />
         <div className="blob blob-2" />
       </div>
+
+      <ToastContainer />
+
+      {/* Fullscreen Chart Modal */}
+      {fullscreenChart && (
+        <div className="fullscreen-overlay" onClick={() => setFullscreenChart(null)}>
+          <div className="fullscreen-content" onClick={e => e.stopPropagation()}>
+            <button className="fullscreen-close" onClick={() => setFullscreenChart(null)}>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+            {fullscreenChart.type === 'html' ? (
+              <iframe src={`${BACKEND_URL}/output/charts/${fullscreenChart.name}`} title={fullscreenChart.name} />
+            ) : (
+              <img src={`${BACKEND_URL}/output/charts/${fullscreenChart.name}`} alt={fullscreenChart.name} />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Mobile Hamburger */}
+      <button className="hamburger-btn" onClick={() => setSidebarOpen(!sidebarOpen)}>
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          {sidebarOpen ? (
+            <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>
+          ) : (
+            <><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></>
+          )}
+        </svg>
+      </button>
+
+      {/* Sidebar overlay (mobile) */}
+      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
+
       {/* ===== SIDEBAR ===== */}
-      <aside className="sidebar">
+      <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
         <div className="sidebar-logo">
           <span className="logo-icon">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
@@ -217,35 +591,95 @@ function App() {
           </div>
         </div>
 
-        {/* Yüklü dosya */}
-        {uploadedFile && (
+        {/* Örnek Veri Setleri */}
+        <div className="upload-section" style={{ marginTop: '12px' }}>
+          <h3>🧪 Örnek Veri</h3>
+          <div className="sample-data-grid">
+            <button className="sample-btn" onClick={() => handleLoadSampleData('iris')}>
+              🌸 Iris
+            </button>
+            <button className="sample-btn" onClick={() => handleLoadSampleData('titanic')}>
+              🚢 Titanic
+            </button>
+            <button className="sample-btn" onClick={() => handleLoadSampleData('tips')}>
+              💰 Tips
+            </button>
+          </div>
+        </div>
+
+        {/* URL'den Veri Çekme */}
+        <div className="upload-section" style={{ marginTop: '12px' }}>
+          <h3>🌐 URL'den Çek</h3>
+          <div style={{ display: 'flex', gap: '6px' }}>
+            <input
+              type="text"
+              placeholder="https://..."
+              value={urlInput}
+              onChange={(e) => setUrlInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleScrapeUrl()}
+              className="url-input"
+            />
+            <button
+              onClick={handleScrapeUrl}
+              disabled={!urlInput.trim() || isScraping}
+              className="url-btn"
+            >
+              {isScraping ? '...' : 'Çek'}
+            </button>
+          </div>
+        </div>
+
+        {/* Dosya Yöneticisi */}
+        {fileList.length > 0 && (
           <>
             <div className="divider" />
-            <div className="file-badge">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink: 0}}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-              {uploadedFile}
-            </div>
-            
-            {/* Veri Önizleme */}
-            {dataPreview && (
-              <div className="data-preview-container">
-                <h4>İlk 5 Satır Önizleme</h4>
-                <div 
-                  className="table-wrapper"
-                  dangerouslySetInnerHTML={{ __html: dataPreview.html }} 
-                />
+            <div className="upload-section">
+              <h3>📂 Dosyalar ({fileList.length})</h3>
+              <div className="file-list">
+                {fileList.map(f => (
+                  <div 
+                    key={f.name} 
+                    className={`file-list-item ${uploadedFile === f.name ? 'active' : ''}`}
+                    onClick={() => setUploadedFile(f.name)}
+                  >
+                    <div className="file-list-info">
+                      <span className="file-list-name" title={f.name}>{f.name}</span>
+                      <span className="file-list-meta">{f.size_display} • {f.row_count > 0 ? `${f.row_count} satır` : ''}</span>
+                    </div>
+                    <button 
+                      className="file-list-delete"
+                      onClick={(e) => { e.stopPropagation(); handleDeleteFile(f.name) }}
+                      title="Sil"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                  </div>
+                ))}
               </div>
-            )}
+            </div>
+          </>
+        )}
+
+        {/* Yüklü dosya önizleme */}
+        {uploadedFile && dataPreview && (
+          <>
+            <div className="divider" />
+            <div className="data-preview-container">
+              <h4>📊 Önizleme: {uploadedFile}</h4>
+              <div 
+                className="table-wrapper"
+                dangerouslySetInnerHTML={{ __html: dataPreview.html }} 
+              />
+            </div>
           </>
         )}
 
         <div className="divider" />
 
-        {/* Sohbeti Temizle */}
+        {/* Aksiyon Butonları */}
         {messages.length > 0 && (
           <button
-            className="sidebar-btn"
-            style={{ marginBottom: '10px', borderColor: 'var(--accent-secondary)', color: 'var(--accent-secondary)' }}
+            className="sidebar-btn pdf-btn"
             onClick={handleDownloadPDF}
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -254,8 +688,8 @@ function App() {
         )}
 
         <button
-          className="sidebar-btn"
-          onClick={() => { setMessages([]); setUploadedFile(null); setDataPreview(null) }}
+          className="sidebar-btn clear-btn"
+          onClick={handleClearChat}
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
           Sohbeti Temizle
@@ -263,21 +697,31 @@ function App() {
 
         {/* Footer */}
         <div className="sidebar-footer">
-          Auto-EDA Bot v1.0<br />
+          Auto-EDA Bot v2.0<br />
           Tamamen Yerel • İnternetsiz • Otonom
         </div>
       </aside>
 
       {/* ===== MAIN CONTENT ===== */}
       <main className="main-content">
-        {/* Header */}
         <header className="header">
-          <h1>Otonom Veri Bilimciniz — <span>AI Destekli EDA</span></h1>
+          <h1><span>Auto-EDA</span> Otonom Veri Bilimcisi</h1>
+          <button 
+            onClick={() => setIsDarkMode(!isDarkMode)} 
+            className="theme-toggle-btn"
+            title="Temayı Değiştir"
+          >
+            {isDarkMode ? (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+            ) : (
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+            )}
+          </button>
         </header>
 
         {/* Chat Alanı */}
         <div className="chat-area">
-          {messages.length === 0 ? (
+          {messages.length === 0 && !streamingText ? (
             /* Hoş geldin ekranı */
             <div className="welcome-screen">
               <div className="welcome-icon">
@@ -317,58 +761,140 @@ function App() {
             </div>
           ) : (
             /* Mesajlar */
-            messages.map((msg, i) => (
-              <div key={i}>
-                <div className={`message ${msg.role}`}>
-                  <div className="message-avatar">
-                    {msg.role === 'user' ? (
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                    ) : (
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
-                    )}
-                  </div>
-                  <div className="message-content-wrapper">
-                    <div className="message-bubble">{msg.content}</div>
-                    
-                    {/* Ajan Düşünce Adımları (Sadece Bot Mesajlarında) */}
-                    {msg.steps && msg.steps.length > 0 && (
-                      <div className="thinking-steps-container">
-                        <details>
-                          <summary>🔍 Ajanın Analiz Adımları ({msg.steps.length} adım)</summary>
-                          <div className="thinking-steps-list">
-                            {msg.steps.map((step, k) => (
-                              <div key={k} className={`step-item ${step.type}`}>
-                                <strong>{step.status}</strong>
-                                {step.detail && <pre>{step.detail}</pre>}
-                              </div>
-                            ))}
-                          </div>
-                        </details>
+            <>
+              {messages.map((msg, i) => (
+                <div key={i}>
+                  <div className={`message ${msg.role}`}>
+                    <div className="message-avatar">
+                      {msg.role === 'user' ? (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                      ) : (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
+                      )}
+                    </div>
+                    <div className="message-content-wrapper">
+                      <div className="message-bubble">
+                        {msg.role === 'bot' ? (
+                          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                            {msg.content}
+                          </ReactMarkdown>
+                        ) : (
+                          msg.content
+                        )}
                       </div>
-                    )}
-                  </div>
-                </div>
+                      
+                      {/* Mesaj Aksiyonları */}
+                      <div className="message-actions">
+                        <button 
+                          className="action-btn" 
+                          onClick={() => handleCopyMessage(msg.content)}
+                          title="Kopyala"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
+                        </button>
+                        {msg.role === 'user' && (
+                          <button 
+                            className="action-btn"
+                            onClick={() => { setInput(msg.content) }}
+                            title="Düzenle"
+                          >
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+                          </button>
+                        )}
+                      </div>
 
-                {/* Grafikler */}
-                {msg.charts && msg.charts.length > 0 && (
-                  <div className="charts-grid">
-                    {msg.charts.map((chart, j) => (
-                      <div key={j} className="chart-card">
-                        <img
-                          src={`${BACKEND_URL}/output/charts/${chart}`}
-                          alt={chart}
-                        />
-                        <div className="chart-name">{chart}</div>
+                      {/* Ajan Düşünce Adımları */}
+                      {msg.steps && msg.steps.length > 0 && (
+                        <div className="thinking-steps-container">
+                          <details>
+                            <summary>🔍 Ajanın Analiz Adımları ({msg.steps.length} adım)</summary>
+                            <div className="thinking-steps-list">
+                              {msg.steps.map((step, k) => (
+                                <div key={k} className={`step-item ${step.type}`}>
+                                  <strong>{step.status}</strong>
+                                  {step.detail && <pre>{step.detail}</pre>}
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* PNG Grafikler */}
+                  {msg.charts && msg.charts.length > 0 && (
+                    <div className="charts-grid">
+                      {msg.charts.map((chart, j) => (
+                        <div key={j} className="chart-card" onClick={() => setFullscreenChart({ name: chart, type: 'png' })}>
+                          <div className="chart-expand-hint">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                          </div>
+                          <img src={`${BACKEND_URL}/output/charts/${chart}`} alt={chart} />
+                          <div className="chart-name">{chart}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Plotly HTML İnteraktif Grafikler */}
+                  {msg.html_charts && msg.html_charts.length > 0 && (
+                    <div className="charts-grid">
+                      {msg.html_charts.map((chart, j) => (
+                        <div key={`html-${j}`} className="chart-card chart-card-interactive">
+                          <div className="chart-interactive-badge">⚡ İnteraktif</div>
+                          <div className="chart-expand-hint" onClick={() => setFullscreenChart({ name: chart, type: 'html' })}>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+                          </div>
+                          <iframe
+                            src={`${BACKEND_URL}/output/charts/${chart}`}
+                            title={chart}
+                            className="chart-iframe"
+                          />
+                          <div className="chart-name">{chart}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </>
+          )}
+
+          {/* Streaming Yanıt (Canlı) */}
+          {streamingText && (
+            <div className="message bot">
+              <div className="message-avatar">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
+              </div>
+              <div className="message-content-wrapper">
+                <div className="message-bubble streaming-bubble">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {streamingText}
+                  </ReactMarkdown>
+                  <span className="streaming-cursor" />
+                </div>
+                {streamingSteps.length > 0 && (
+                  <div className="thinking-steps-container">
+                    <details open>
+                      <summary>🔍 Canlı Adımlar ({streamingSteps.length})</summary>
+                      <div className="thinking-steps-list">
+                        {streamingSteps.map((step, k) => (
+                          <div key={k} className={`step-item ${step.type}`}>
+                            <strong>{step.status}</strong>
+                            {step.detail && <pre>{step.detail}</pre>}
+                          </div>
+                        ))}
                       </div>
-                    ))}
+                    </details>
                   </div>
                 )}
               </div>
-            ))
+            </div>
           )}
 
           {/* Düşünüyor animasyonu */}
-          {isLoading && (
+          {isLoading && !streamingText && (
             <div className="message bot">
               <div className="message-avatar">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
@@ -396,12 +922,21 @@ function App() {
               onKeyDown={handleKeyDown}
               disabled={isLoading}
             />
+            {recognitionRef.current && (
+              <button 
+                className={`mic-btn ${isListening ? 'listening' : ''}`}
+                onClick={toggleListening}
+                title="Sesle Yazdır"
+              >
+                <svg width="20" height="20" viewBox="0 0 24 24" fill={isListening ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+              </button>
+            )}
             <button
               className="send-btn"
               onClick={handleSend}
               disabled={!input.trim() || isLoading}
             >
-              ➤
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
             </button>
           </div>
         </div>
