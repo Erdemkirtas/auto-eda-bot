@@ -42,6 +42,16 @@ data/*
 # Üretilen grafikler ve raporları yoksay ama klasör yapısını koru
 output/charts/*
 !output/charts/.gitkeep
+output/logs/*
+!output/logs/.gitkeep
+
+# SQLite veritabanı (kalıcı hafıza)
+data/*.db
+data/*.sqlite
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
 
 # Test önbellekleri
 .pytest_cache/

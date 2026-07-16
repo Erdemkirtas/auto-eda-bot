@@ -44,9 +44,6 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [fullscreenChart, setFullscreenChart] = useState(null)
 
-  // ---------------------------------------------------------------------------
-  // LocalStorage senkronizasyonu
-  // ---------------------------------------------------------------------------
   useEffect(() => { localStorage.setItem('eda_messages', JSON.stringify(messages)) }, [messages])
   useEffect(() => { localStorage.setItem('eda_uploadedFile', JSON.stringify(uploadedFile)) }, [uploadedFile])
   useEffect(() => { localStorage.setItem('eda_dataPreview', JSON.stringify(dataPreview)) }, [dataPreview])
@@ -61,9 +58,6 @@ function App() {
     }
   }, [isDarkMode])
 
-  // ---------------------------------------------------------------------------
-  // Sesli Girdi (Speech Recognition)
-  // ---------------------------------------------------------------------------
   const [isListening, setIsListening] = useState(false)
   const recognitionRef = useRef(null)
 
@@ -85,20 +79,9 @@ function App() {
     }
   }, [])
 
-  const toggleListening = () => {
-    if (isListening) {
-      recognitionRef.current?.stop()
-    } else {
-      recognitionRef.current?.start()
-    }
-  }
-
   const chatEndRef = useRef(null)
   const fileInputRef = useRef(null)
 
-  // ---------------------------------------------------------------------------
-  // Backend sağlık kontrolü
-  // ---------------------------------------------------------------------------
   useEffect(() => {
     const checkHealth = async () => {
       try {
@@ -113,18 +96,17 @@ function App() {
     return () => clearInterval(interval)
   }, [])
 
-  // ---------------------------------------------------------------------------
-  // Dosya listesini getir
-  // ---------------------------------------------------------------------------
   const fetchFileList = useCallback(async () => {
+    if (!token) return
     try {
-      const res = await fetch(`${BACKEND_URL}/api/files`)
+      const res = await fetch(`${BACKEND_URL}/api/files`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
       const data = await res.json()
       setFileList(data.files || [])
     } catch {
-      // Backend offline olabilir
     }
-  }, [])
+  }, [token])
 
   useEffect(() => {
     fetchFileList()
@@ -132,14 +114,10 @@ function App() {
     return () => clearInterval(interval)
   }, [fetchFileList])
 
-  // Sohbet alanını otomatik kaydır
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isLoading, streamingText])
 
-  // ---------------------------------------------------------------------------
-  // Dosya yükleme
-  // ---------------------------------------------------------------------------
   const handleFileUpload = async (file) => {
     if (!file) return
 
@@ -155,6 +133,7 @@ function App() {
     try {
       const res = await fetch(`${BACKEND_URL}/api/upload`, {
         method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
         body: formData,
       })
       const data = await res.json()
@@ -183,9 +162,6 @@ function App() {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Mesaj gönder (SSE Streaming destekli)
-  // ---------------------------------------------------------------------------
   const handleSend = async () => {
     if (!input.trim() || isLoading) return
 
@@ -197,200 +173,86 @@ function App() {
     setStreamingSteps([])
 
     try {
-      const res = await fetch(`${BACKEND_URL}/api/chat/stream`, {
+      await fetchEventSource(`${BACKEND_URL}/api/chat/stream`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({
           message: userMsg,
-          file_name: uploadedFile,
           session_id: sessionId
-        })
-      })
-
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`)
-      }
-
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      let fullReply = ''
-      let finalCharts = []
-      let finalHtmlCharts = []
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() || ''
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const jsonStr = line.slice(6).trim()
-          if (!jsonStr) continue
-
-          try {
-            const event = JSON.parse(jsonStr)
-
-            if (event.type === 'start') {
-              setSessionId(event.session_id)
-            } else if (event.type === 'token') {
-              fullReply += event.content
-              setStreamingText(fullReply)
-            } else if (event.type === 'step') {
-              const stepLabels = {
-                tool_start: event.tool === 'python_repl' 
-                  ? '💻 Python kodu çalıştırılıyor...' 
-                  : event.tool === 'load_data' 
-                    ? '📂 Veri dosyası okunuyor...' 
-                    : `🔧 Araç: ${event.tool}`,
-                tool_end: '✅ Sonuç alındı'
-              }
-              setStreamingSteps(prev => [...prev, {
-                type: event.step_type === 'tool_start' ? 'code' : 'result',
-                status: stepLabels[event.step_type] || event.step_type,
-                detail: event.detail
-              }])
-            } else if (event.type === 'done') {
-              fullReply = event.reply || fullReply
-              finalCharts = event.charts || []
-              finalHtmlCharts = event.html_charts || []
-            } else if (event.type === 'error') {
-              showToast(`Ajan hatası: ${event.message}`, 'error')
-            }
-          } catch {
-            // JSON parse hatası — atla
+        }),
+        onmessage(event) {
+          const data = JSON.parse(event.data)
+          if (data.type === 'token') {
+             setStreamingText(prev => prev + data.content)
+          } else if (data.type === 'done') {
+             setMessages(prev => [...prev, { role: 'bot', content: data.reply }])
+             setStreamingText('')
           }
         }
-      }
-
-      // Streaming bitti — mesajı kalıcı hale getir
-      setMessages(prev => [...prev, {
-        role: 'bot',
-        content: fullReply || 'Bir hata oluştu.',
-        charts: finalCharts,
-        html_charts: finalHtmlCharts,
-        steps: streamingSteps
-      }])
-      setStreamingText('')
-      setStreamingSteps([])
-      fetchFileList()
-
+      })
     } catch (err) {
-      // SSE desteklenmiyorsa veya hata olursa klasik endpoint'e fallback
-      try {
-        const res = await fetch(`${BACKEND_URL}/api/chat`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            message: userMsg,
-            file_name: uploadedFile,
-            session_id: sessionId
-          })
-        })
-        const data = await res.json()
-        if (data.session_id) setSessionId(data.session_id)
-
-        setMessages(prev => [...prev, {
-          role: 'bot',
-          content: data.reply || 'Bir hata oluştu.',
-          charts: data.charts || [],
-          html_charts: data.html_charts || [],
-          steps: data.steps || []
-        }])
-        fetchFileList()
-      } catch {
-        setMessages(prev => [...prev, {
-          role: 'bot',
-          content: '❌ Backend\'e bağlanılamadı. Lütfen sunucunun çalıştığından emin olun.',
-          charts: [],
-          html_charts: [],
-          steps: []
-        }])
-      }
+       showToast('Hata oluştu', 'error')
     } finally {
       setIsLoading(false)
-      setStreamingText('')
-      setStreamingSteps([])
     }
   }
 
-  // Enter ile gönder
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
+  const handleLogout = () => {
+    localStorage.removeItem('token')
+    localStorage.removeItem('username')
+    setToken(null)
+    setUsername('')
+    setMessages([])
+    setSessionId(crypto.randomUUID())
+    showToast('Çıkış yapıldı', 'info')
   }
 
-  // Hızlı eylem butonları
-  const handleQuickAction = (text) => {
-    setInput(text)
-  }
-
-  // ---------------------------------------------------------------------------
-  // PDF İndirme
-  // ---------------------------------------------------------------------------
-  const handleDownloadPDF = () => {
-    if (messages.length === 0) {
-      showToast("Henüz bir analiz yapılmadı!", 'warning')
-      return
-    }
-    const text = encodeURIComponent("Otonom Veri Bilimcisi tarafından oluşturulan EDA Raporu.")
-    window.open(`${BACKEND_URL}/api/report?text=${text}`, '_blank')
-    showToast('PDF rapor indiriliyor...', 'info')
-  }
-
-  // ---------------------------------------------------------------------------
-  // URL'den Veri Çekme (Web Scraping)
-  // ---------------------------------------------------------------------------
-  const handleScrapeUrl = async () => {
-    if (!urlInput.trim()) return
-    setIsScraping(true)
+  const handleClearChat = async () => {
+    setMessages([])
+    setUploadedFile(null)
+    setDataPreview(null)
+    const newSessionId = crypto.randomUUID()
+    setSessionId(newSessionId)
     try {
-      const res = await fetch(`${BACKEND_URL}/api/scrape`, {
+      await fetch(`${BACKEND_URL}/api/reset`, { 
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: urlInput.trim() })
+        headers: { 'Authorization': `Bearer ${token}` }
+      })
+    } catch { /* */ }
+    showToast('Sohbet temizlendi.', 'info')
+  }
+
+  const handleDeleteFile = async (filename) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/files/${filename}`, { 
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
       })
       const data = await res.json()
       if (data.success) {
-        setUploadedFile(data.file_name)
-        setDataPreview({
-          html: data.preview_html,
-          rows: data.row_count,
-          cols: data.columns.length
-        })
-        setMessages(prev => [...prev, {
-          role: 'bot',
-          content: `🌐 **"${urlInput}"** adresinden **${data.row_count}** satırlık tablo çekildi!\n\nDosya: \`${data.file_name}\`\n\nŞimdi bu veri hakkında sorular sorabilirsiniz.`,
-          charts: [],
-          html_charts: [],
-          steps: []
-        }])
-        setUrlInput('')
-        showToast(`${data.row_count} satırlık tablo çekildi!`, 'success')
+        showToast(`"${filename}" silindi.`, 'info')
+        if (uploadedFile === filename) {
+          setUploadedFile(null)
+          setDataPreview(null)
+        }
         fetchFileList()
-      } else {
-        showToast(data.detail || 'URL\'den veri çekilemedi!', 'error')
       }
-    } catch (err) {
-      showToast('Web scraping hatası: ' + err.message, 'error')
-    } finally {
-      setIsScraping(false)
+    } catch {
+      showToast('Dosya silinemedi.', 'error')
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Örnek Veri Seti Yükleme
-  // ---------------------------------------------------------------------------
   const handleLoadSampleData = async (dataset) => {
     try {
       const res = await fetch(`${BACKEND_URL}/api/sample-data`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify({ dataset })
       })
       const data = await res.json()
@@ -418,98 +280,20 @@ function App() {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // Dosya Silme
-  // ---------------------------------------------------------------------------
-  const handleDeleteFile = async (filename) => {
-    try {
-      const res = await fetch(`${BACKEND_URL}/api/files/${filename}`, { method: 'DELETE' })
-      const data = await res.json()
-      if (data.success) {
-        showToast(`"${filename}" silindi.`, 'info')
-        if (uploadedFile === filename) {
-          setUploadedFile(null)
-          setDataPreview(null)
-        }
-        fetchFileList()
-      }
-    } catch {
-      showToast('Dosya silinemedi.', 'error')
-    }
+  if (!token) {
+    return (
+      <>
+        <ToastContainer />
+        <AuthPage onLogin={(newToken, newUsername) => {
+          setToken(newToken)
+          setUsername(newUsername)
+          localStorage.setItem('token', newToken)
+          localStorage.setItem('username', newUsername)
+        }} />
+      </>
+    )
   }
 
-  // ---------------------------------------------------------------------------
-  // Mesaj Kopyalama
-  // ---------------------------------------------------------------------------
-  const handleCopyMessage = (text) => {
-    navigator.clipboard.writeText(text).then(() => {
-      showToast('Mesaj panoya kopyalandı!', 'success', 2000)
-    })
-  }
-
-  // ---------------------------------------------------------------------------
-  // Sohbeti Temizle
-  // ---------------------------------------------------------------------------
-  const handleClearChat = async () => {
-    setMessages([])
-    setUploadedFile(null)
-    setDataPreview(null)
-    const newSessionId = crypto.randomUUID()
-    setSessionId(newSessionId)
-    try {
-      await fetch(`${BACKEND_URL}/api/reset`, { method: 'POST' })
-    } catch { /* */ }
-    showToast('Sohbet temizlendi.', 'info')
-  }
-
-  // ---------------------------------------------------------------------------
-  // Drag & Drop
-  // ---------------------------------------------------------------------------
-  const handleDragOver = (e) => { e.preventDefault(); setDragover(true) }
-  const handleDragLeave = () => setDragover(false)
-  const handleDrop = (e) => {
-    e.preventDefault()
-    setDragover(false)
-    const file = e.dataTransfer.files[0]
-    if (file) handleFileUpload(file)
-  }
-
-  // ---------------------------------------------------------------------------
-  // Markdown Render Bileşenleri
-  // ---------------------------------------------------------------------------
-  const markdownComponents = {
-    code({ node, inline, className, children, ...props }) {
-      const match = /language-(\w+)/.exec(className || '')
-      return !inline && match ? (
-        <SyntaxHighlighter
-          style={oneDark}
-          language={match[1]}
-          PreTag="div"
-          customStyle={{
-            borderRadius: '8px',
-            fontSize: '0.82rem',
-            margin: '8px 0'
-          }}
-          {...props}
-        >
-          {String(children).replace(/\n$/, '')}
-        </SyntaxHighlighter>
-      ) : (
-        <code className="inline-code" {...props}>{children}</code>
-      )
-    },
-    table({ children }) {
-      return (
-        <div className="md-table-wrapper">
-          <table className="md-table">{children}</table>
-        </div>
-      )
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // RENDER
-  // ---------------------------------------------------------------------------
   return (
     <>
       <div className="bg-blobs">
@@ -519,43 +303,10 @@ function App() {
 
       <ToastContainer />
 
-      {/* Fullscreen Chart Modal */}
-      {fullscreenChart && (
-        <div className="fullscreen-overlay" onClick={() => setFullscreenChart(null)}>
-          <div className="fullscreen-content" onClick={e => e.stopPropagation()}>
-            <button className="fullscreen-close" onClick={() => setFullscreenChart(null)}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-            </button>
-            {fullscreenChart.type === 'html' ? (
-              <iframe src={`${BACKEND_URL}/output/charts/${fullscreenChart.name}`} title={fullscreenChart.name} />
-            ) : (
-              <img src={`${BACKEND_URL}/output/charts/${fullscreenChart.name}`} alt={fullscreenChart.name} />
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Mobile Hamburger */}
-      <button className="hamburger-btn" onClick={() => setSidebarOpen(!sidebarOpen)}>
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          {sidebarOpen ? (
-            <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>
-          ) : (
-            <><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></>
-          )}
-        </svg>
-      </button>
-
-      {/* Sidebar overlay (mobile) */}
-      {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
-
-      {/* ===== SIDEBAR ===== */}
       <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
         <div className="sidebar-logo">
-          <span className="logo-icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
-          </span>
           <h2>Auto-EDA Bot</h2>
+          <span className="user-name">Hoş geldin, {username}</span>
         </div>
 
         <div className="divider" />
@@ -573,9 +324,14 @@ function App() {
           <h3>📁 Veri Yükle</h3>
           <div
             className={`upload-zone ${dragover ? 'dragover' : ''}`}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
+            onDragOver={(e) => { e.preventDefault(); setDragover(true) }}
+            onDragLeave={() => setDragover(false)}
+            onDrop={(e) => {
+              e.preventDefault()
+              setDragover(false)
+              const file = e.dataTransfer.files[0]
+              if (file) handleFileUpload(file)
+            }}
           >
             <input
               ref={fileInputRef}
@@ -595,18 +351,11 @@ function App() {
         <div className="upload-section" style={{ marginTop: '12px' }}>
           <h3>🧪 Örnek Veri</h3>
           <div className="sample-data-grid">
-            <button className="sample-btn" onClick={() => handleLoadSampleData('iris')}>
-              🌸 Iris
-            </button>
-            <button className="sample-btn" onClick={() => handleLoadSampleData('titanic')}>
-              🚢 Titanic
-            </button>
-            <button className="sample-btn" onClick={() => handleLoadSampleData('tips')}>
-              💰 Tips
-            </button>
+            <button className="sample-btn" onClick={() => handleLoadSampleData('iris')}>🌸 Iris</button>
+            <button className="sample-btn" onClick={() => handleLoadSampleData('titanic')}>🚢 Titanic</button>
+            <button className="sample-btn" onClick={() => handleLoadSampleData('tips')}>💰 Tips</button>
           </div>
         </div>
-
         {/* URL'den Veri Çekme */}
         <div className="upload-section" style={{ marginTop: '12px' }}>
           <h3>🌐 URL'den Çek</h3>
