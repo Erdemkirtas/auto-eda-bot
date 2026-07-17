@@ -80,7 +80,7 @@ export default function AuthPage({ onLogin }) {
       <div className="auth-card glass-panel">
         <div className="auth-header">
           <div className="auth-logo">
-            <Bot size={36} color="var(--primary)" />
+            <Bot size={36} color="var(--accent-primary)" />
           </div>
           <h1>Auto-EDA Bot</h1>
           <p>Otonom Veri Bilimcisi Ajanı</p>
