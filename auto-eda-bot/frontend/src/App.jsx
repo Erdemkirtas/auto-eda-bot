@@ -8,7 +8,14 @@ import './App.css'
 
 const BACKEND_URL = 'http://localhost:8000'
 
+import { fetchEventSource } from '@microsoft/fetch-event-source'
+import AuthPage from './components/AuthPage'
+
 function App() {
+  // Auth State
+  const [token, setToken] = useState(() => localStorage.getItem('token') || null);
+  const [username, setUsername] = useState(() => localStorage.getItem('username') || '');
+
   // ---------------------------------------------------------------------------
   // State
   // ---------------------------------------------------------------------------
@@ -162,6 +169,58 @@ function App() {
     }
   }
 
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }
+
+  const handleCopyMessage = (content) => {
+    navigator.clipboard.writeText(content)
+    showToast('Mesaj kopyalandı!', 'info')
+  }
+
+  const handleDownloadPDF = async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/report/pdf`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ messages })
+      })
+      if (res.ok) {
+        const blob = await res.blob()
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = 'eda_report.pdf'
+        a.click()
+        window.URL.revokeObjectURL(url)
+        showToast('PDF raporu indiriliyor...', 'success')
+      } else {
+        showToast('PDF oluşturulamadı!', 'error')
+      }
+    } catch {
+      showToast('PDF indirme hatası!', 'error')
+    }
+  }
+
+  const handleQuickAction = (prompt) => {
+    setInput(prompt)
+  }
+
+  const toggleListening = () => {
+    if (!recognitionRef.current) return
+    if (isListening) {
+      recognitionRef.current.stop()
+    } else {
+      recognitionRef.current.start()
+    }
+  }
+
   const handleSend = async () => {
     if (!input.trim() || isLoading) return
 
@@ -277,6 +336,39 @@ function App() {
       }
     } catch (err) {
       showToast('Hata: ' + err.message, 'error')
+    }
+  }
+
+  const handleScrapeUrl = async () => {
+    if (!urlInput.trim() || isScraping) return
+    setIsScraping(true)
+    try {
+      const res = await fetch(`${BACKEND_URL}/api/scrape`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ url: urlInput.trim() })
+      })
+      const data = await res.json()
+      if (data.success) {
+        setUploadedFile(data.file_name)
+        setDataPreview({
+          html: data.preview_html,
+          rows: data.row_count,
+          cols: data.columns?.length || 0
+        })
+        showToast(`URL'den veri çekildi: ${data.file_name}`, 'success')
+        setUrlInput('')
+        fetchFileList()
+      } else {
+        showToast(data.detail || 'URL\'den veri çekilemedi!', 'error')
+      }
+    } catch (err) {
+      showToast('URL hatası: ' + err.message, 'error')
+    } finally {
+      setIsScraping(false)
     }
   }
 
